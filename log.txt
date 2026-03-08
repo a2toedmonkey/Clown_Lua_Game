@@ -1,0 +1,13 @@
+Added loadSequentialFrames helper and wired jump action frames plus integer jumpStrength/gravity/velocity tracking into player state.
+
+Updated love.load to capture groundY so later physics and collision code know the current floor height.
+
+Reworked handleMovement to report whether horizontal input is active without stomping the jump state and to return that flag for other systems.
+
+Created collision and handleJump helpers to run gravity every frame, clamp to the ground, and keep animation state aligned when landing.
+
+Hooked spacebar via love.keypressed and extended love.draw to play the eight-frame jump animation until the player returns to the ground.
+
+***Note Run `love .` to confirm jump timing and tweak player.jumpStrength if you want a higher or lower leap.***
+********************
+Extended collision handling to spawn reusable red platform blocks via loadPlatforms and include them in jump resolution.
