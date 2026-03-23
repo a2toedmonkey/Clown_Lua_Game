@@ -1,6 +1,16 @@
-local SPRITE_PATH = "sprites/darla/walk/darlawalk-1.png"  -- Replace with your sprite path
+--[[
+Main gameplay file.
+This script wires together player movement, jumping, animation state,
+platform spawning, and simple projectile shooting.
+]]
 
--- Utility to build ordered frame lists for similarly named sprite sheets.
+-- Base sprite used to initialize player dimensions and default frame.
+local SPRITE_PATH = "sprites/darla/walk/darlawalk-1.png"
+
+--[[
+Builds an ordered frame list from files named like "prefix1.png", "prefix2.png", etc.
+Used for walk, jump, and shoot animation sequences.
+]]
 local function loadSequentialFrames(prefix, count)
     local frames = {}
     for i = 1, count do
@@ -9,17 +19,49 @@ local function loadSequentialFrames(prefix, count)
     return frames
 end
 
+--[[
+Platform generation config:
+- count: how many floating platforms to spawn.
+- width/height: rectangle size for each platform.
+- color: RGB draw color for platform rectangles.
+]]
 local platformSettings = {
-    count = 4,
+    count = 7,
     width = 200,
     height = 22,
     color = {1, 0, 0}
 }
 
+-- Runtime list of generated platforms.
 local platforms = {}
 
--- Player state tracks position, motion speed, facing direction, and animation info.
--- Sprite dimensions default to 64x64 but will update to match the loaded asset.
+--[[
+Projectile config:
+- maxActive: hard cap of concurrent shots on-screen.
+- speed: horizontal velocity in pixels/second.
+- radius: circle size for each projectile.
+- color: RGB draw color for projectiles.
+]]
+local projectileSettings = {
+    maxActive = 6,
+    speed = 520,
+    radius = 6,
+    color = {1, 0, 0}
+}
+
+-- Runtime list of active projectiles.
+local projectiles = {}
+
+--[[
+Core player state:
+- x/y: top-left world position.
+- speed: horizontal move speed (A/D).
+- sprite/width/height: currently drawn frame and visual bounds.
+- direction/current: facing and animation state (stand/walk/jump/shoot).
+- velocityY/jumpStrength/gravity/isJumping: vertical movement and jump physics.
+- groundY: fallback ground position (window floor).
+- actions: preloaded frame data grouped by action.
+]]
 local player = {
     x = 0,
     y = 0,
@@ -30,7 +72,7 @@ local player = {
     direction = "right",
     current = "stand",
     velocityY = 0,
-    jumpStrength = 600, -- Integer knob that simultaneously governs jump speed and height.
+    jumpStrength = 600,
     gravity = 900,
     isJumping = false,
     groundY = 0,
@@ -55,10 +97,18 @@ local player = {
                     frames = loadSequentialFrames("sprites/darla/jump/darlajump-", 8)
                 }
             }
+        },
+        shoot = {
+            animations = {
+                shoot = {
+                    frames = loadSequentialFrames("sprites/darla/shoot/darlashoot-", 3)
+                }
+            }
         }
     }
 }
 
+-- Generates platform positions within screen bounds and above floor level.
 local function loadPlatforms()
     platforms = {}
     local windowWidth, windowHeight = love.graphics.getDimensions()
@@ -69,21 +119,81 @@ local function loadPlatforms()
         maxY = minY
     end
 
-    for i = 1, platformSettings.count do
+    local function overlaps(x, y, width, height)
+        for _, platform in ipairs(platforms) do
+            local horizontally = x < platform.x + platform.width and (x + width) > platform.x
+            local vertically = y < platform.y + platform.height and (y + height) > platform.y
+            if horizontally and vertically then
+                return true
+            end
+        end
+        return false
+    end
+
+    for _ = 1, platformSettings.count do
         local width = platformSettings.width
+        local height = platformSettings.height
         local xMax = math.max(0, math.floor(windowWidth - width))
-        local x = math.random(0, xMax)
-        local y = math.random(minY, maxY)
-        platforms[#platforms + 1] = {
-            x = x,
-            y = y,
-            width = width,
-            height = platformSettings.height
-        }
+
+        local attempts = 0
+        local placed = false
+        while attempts < 40 and not placed do
+            local x = math.random(0, xMax)
+            local y = math.random(minY, maxY)
+            if not overlaps(x, y, width, height) then
+                platforms[#platforms + 1] = {x = x, y = y, width = width, height = height}
+                placed = true
+            else
+                attempts = attempts + 1
+            end
+        end
+
+        if not placed then
+            -- Deterministic fallback: stack upwards until space is found.
+            local fallbackY = minY
+            local fallbackX = math.random(0, xMax)
+            while overlaps(fallbackX, fallbackY, width, height) and fallbackY > 0 do
+                fallbackY = fallbackY - (height + 10)
+            end
+            platforms[#platforms + 1] = {x = fallbackX, y = math.max(fallbackY, 0), width = width, height = height}
+        end
     end
 end
 
--- Initialize window title, load the main sprite, and place the player at the floor center.
+-- Creates one projectile traveling in the requested direction, respecting maxActive.
+local function spawnProjectile(direction)
+    if #projectiles >= projectileSettings.maxActive then
+        return
+    end
+
+    local dir = direction == "left" and -1 or 1
+    local spawnX = dir == 1 and (player.x + player.width) or player.x
+    local spawnY = player.y + player.height * 0.45
+
+    projectiles[#projectiles + 1] = {
+        x = spawnX,
+        y = spawnY,
+        vx = projectileSettings.speed * dir,
+        radius = projectileSettings.radius
+    }
+end
+
+-- Moves projectiles every frame and removes any that leave screen horizontally.
+local function updateProjectiles(dt)
+    local windowWidth = love.graphics.getWidth()
+    for i = #projectiles, 1, -1 do
+        local projectile = projectiles[i]
+        projectile.x = projectile.x + projectile.vx * dt
+
+        local offLeft = projectile.x + projectile.radius < 0
+        local offRight = projectile.x - projectile.radius > windowWidth
+        if offLeft or offRight then
+            table.remove(projectiles, i)
+        end
+    end
+end
+
+-- Love2D load hook: initialize random seed, player sprite sizing, start position, and platforms.
 function love.load()
     math.randomseed(os.time())
     love.window.setTitle("Sprite Boilerplate")
@@ -100,11 +210,17 @@ function love.load()
     loadPlatforms()
 end
 
--- Read A/D input to update direction, choose walk/stand states, and translate the player.
+--[[
+Reads movement and shooting input, updates facing direction,
+picks stand/walk/shoot animation state, and applies horizontal movement.
+]]
 local function handleMovement(dt)
     local horizontal = 0
     local moving = false
-    -- Capture whether either movement key is pressed and decide which animation should play.
+    local shootingLeft = love.keyboard.isDown("left")
+    local shootingRight = love.keyboard.isDown("right")
+    local shooting = shootingLeft or shootingRight
+
     if love.keyboard.isDown("a") or love.keyboard.isDown("d") then
         if love.keyboard.isDown("a") then
             horizontal = horizontal - 1
@@ -120,13 +236,22 @@ local function handleMovement(dt)
     end
 
     if not player.isJumping then
-        player.current = moving and "walk" or "stand"
+        if shooting then
+            player.current = "shoot"
+            if shootingLeft then
+                player.direction = "left"
+            else
+                player.direction = "right"
+            end
+        else
+            player.current = moving and "walk" or "stand"
+        end
     end
 
-    -- Apply horizontal velocity scaled by delta-time and the configured movement speed.
+    -- Horizontal movement integrates speed over frame delta time.
     player.x = player.x + horizontal * player.speed * dt
 
-    -- Keep the player within the window bounds so they cannot walk off-screen.
+    -- Clamp to screen so the player cannot move out of view.
     local windowWidth = love.graphics.getWidth()
     local minX = 0
     local maxX = windowWidth - player.width
@@ -139,7 +264,10 @@ local function handleMovement(dt)
     return moving
 end
 
--- Basic collision stub so jumps can clamp to the floor (later extended for platforms).
+--[[
+Checks vertical landing collisions against platforms and floor.
+Returns whether a collision happened and the corrected Y position.
+]]
 local function collision(nextY)
     local ground = player.groundY or (love.graphics.getHeight() - player.height)
     local collided = false
@@ -174,6 +302,7 @@ local function collision(nextY)
     return false, nextY
 end
 
+-- Applies jump/gravity and transitions between airborne and grounded states.
 local function handleJump(dt, isMoving)
     player.groundY = love.graphics.getHeight() - player.height
 
@@ -205,21 +334,31 @@ local function handleJump(dt, isMoving)
     end
 end
 
--- Delegate per-frame updates to the movement helper so logic stays centralized.
+-- Love2D update hook: run movement, jump physics, and projectile simulation.
 function love.update(dt)
     local moving = handleMovement(dt)
     handleJump(dt, moving)
+    updateProjectiles(dt)
 end
 
+-- Love2D keypress hook: jump with space, shoot with left/right arrows.
 function love.keypressed(key)
     if key == "space" and not player.isJumping then
         player.isJumping = true
         player.velocityY = -player.jumpStrength
         player.current = "jump"
+    elseif key == "left" or key == "right" then
+        player.direction = key == "left" and "left" or "right"
+        spawnProjectile(player.direction)
     end
 end
 
--- Pick the correct animation frame, mirror it if facing left, and render or fallback to a box.
+--[[
+Love2D draw hook:
+1) draw platforms
+2) choose and draw current player animation frame (mirrored for left-facing)
+3) draw active projectiles as red circles
+]]
 function love.draw()
     love.graphics.setColor(platformSettings.color[1], platformSettings.color[2], platformSettings.color[3])
     for _, platform in ipairs(platforms) do
@@ -228,11 +367,14 @@ function love.draw()
     love.graphics.setColor(1, 1, 1)
 
     if player.sprite then
-        -- Switch between walk cycle frames or idle frame depending on current action state.
         if player.current == "walk" then
             local walkAnimation = player.actions.walk.animations.walk.animation
             local frameIndex = math.floor(love.timer.getTime() * 10) % #walkAnimation.frames + 1
             player.sprite = walkAnimation.frames[frameIndex]
+        elseif player.current == "shoot" then
+            local shootAnimation = player.actions.shoot.animations.shoot
+            local frameIndex = math.floor(love.timer.getTime() * 14) % #shootAnimation.frames + 1
+            player.sprite = shootAnimation.frames[frameIndex]
         elseif player.current == "jump" then
             local jumpAnimation = player.actions.jump.animations.jump
             local frameIndex = math.floor(love.timer.getTime() * 12) % #jumpAnimation.frames + 1
@@ -240,17 +382,23 @@ function love.draw()
         else
             player.sprite = player.actions.walk.animations.stand.frames[1]
         end
+
         local drawX = math.floor(player.x)
         local drawY = math.floor(player.y)
-
         if player.direction == "left" then
             love.graphics.draw(player.sprite, drawX + player.width, drawY, 0, -1, 1)
         else
             love.graphics.draw(player.sprite, drawX, drawY)
         end
     else
-        -- Provide a simple rectangle fallback when the sprite failed to load.
+        -- Rectangle fallback if sprite loading fails.
         love.graphics.setColor(1, 1, 1)
         love.graphics.rectangle("fill", math.floor(player.x), math.floor(player.y), player.width, player.height)
     end
+
+    love.graphics.setColor(projectileSettings.color[1], projectileSettings.color[2], projectileSettings.color[3])
+    for _, projectile in ipairs(projectiles) do
+        love.graphics.circle("fill", math.floor(projectile.x), math.floor(projectile.y), projectile.radius)
+    end
+    love.graphics.setColor(1, 1, 1)
 end
