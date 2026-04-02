@@ -49,6 +49,14 @@ local projectileSettings = {
     color = {1, 0, 0}
 }
 
+local rocketSettings = {
+    frames = loadSequentialFrames("sprites/projectiles/rocket/rocket", 4),
+    fps = 12
+}
+rocketSettings.frameDuration = 1 / rocketSettings.fps
+rocketSettings.width = rocketSettings.frames[1]:getWidth()
+rocketSettings.height = rocketSettings.frames[1]:getHeight()
+
 -- Runtime list of active projectiles.
 local projectiles = {}
 
@@ -105,7 +113,8 @@ local player = {
                 }
             }
         }
-    }
+    },
+    useRocketShots = false
 }
 
 -- Generates platform positions within screen bounds and above floor level.
@@ -161,7 +170,7 @@ local function loadPlatforms()
 end
 
 -- Creates one projectile traveling in the requested direction, respecting maxActive.
-local function spawnProjectile(direction)
+local function spawnProjectile(direction, useRocket)
     if #projectiles >= projectileSettings.maxActive then
         return
     end
@@ -169,13 +178,28 @@ local function spawnProjectile(direction)
     local dir = direction == "left" and -1 or 1
     local spawnX = dir == 1 and (player.x + player.width) or player.x
     local spawnY = player.y + player.height * 0.45
+    useRocket = useRocket or false
 
-    projectiles[#projectiles + 1] = {
-        x = spawnX,
-        y = spawnY,
-        vx = projectileSettings.speed * dir,
-        radius = projectileSettings.radius
-    }
+    if useRocket then
+        projectiles[#projectiles + 1] = {
+            kind = "rocket",
+            x = spawnX,
+            y = spawnY,
+            vx = projectileSettings.speed * dir,
+            width = rocketSettings.width,
+            height = rocketSettings.height,
+            direction = direction,
+            animationTime = 0
+        }
+    else
+        projectiles[#projectiles + 1] = {
+            kind = "bullet",
+            x = spawnX,
+            y = spawnY,
+            vx = projectileSettings.speed * dir,
+            radius = projectileSettings.radius
+        }
+    end
 end
 
 -- Moves projectiles every frame and removes any that leave screen horizontally.
@@ -184,10 +208,23 @@ local function updateProjectiles(dt)
     for i = #projectiles, 1, -1 do
         local projectile = projectiles[i]
         projectile.x = projectile.x + projectile.vx * dt
+        if projectile.kind == "rocket" then
+            projectile.animationTime = projectile.animationTime + dt
+        end
 
-        local offLeft = projectile.x + projectile.radius < 0
-        local offRight = projectile.x - projectile.radius > windowWidth
-        if offLeft or offRight then
+        local remove = false
+        if projectile.kind == "rocket" then
+            local halfWidth = (projectile.width or rocketSettings.width) * 0.5
+            local offLeft = projectile.x + halfWidth < 0
+            local offRight = projectile.x - halfWidth > windowWidth
+            remove = offLeft or offRight
+        else
+            local offLeft = projectile.x + projectile.radius < 0
+            local offRight = projectile.x - projectile.radius > windowWidth
+            remove = offLeft or offRight
+        end
+
+        if remove then
             table.remove(projectiles, i)
         end
     end
@@ -349,7 +386,9 @@ function love.keypressed(key)
         player.current = "jump"
     elseif key == "left" or key == "right" then
         player.direction = key == "left" and "left" or "right"
-        spawnProjectile(player.direction)
+        spawnProjectile(player.direction, player.useRocketShots)
+    elseif key == "1" then
+        player.useRocketShots = not player.useRocketShots
     end
 end
 
@@ -396,9 +435,32 @@ function love.draw()
         love.graphics.rectangle("fill", math.floor(player.x), math.floor(player.y), player.width, player.height)
     end
 
-    love.graphics.setColor(projectileSettings.color[1], projectileSettings.color[2], projectileSettings.color[3])
+    local modeLabel = player.useRocketShots and "Rocket" or "Normal"
+    love.graphics.setColor(1, 1, 0)
+    love.graphics.print(("Shots: %s"):format(modeLabel), 12, 12)
+    love.graphics.setColor(1, 1, 1)
+
     for _, projectile in ipairs(projectiles) do
-        love.graphics.circle("fill", math.floor(projectile.x), math.floor(projectile.y), projectile.radius)
+        if projectile.kind == "rocket" then
+            local frameCount = #rocketSettings.frames
+            local frameIndex = math.floor(projectile.animationTime / rocketSettings.frameDuration) % frameCount + 1
+            local frame = rocketSettings.frames[frameIndex]
+            local scaleX = projectile.direction == "left" and -1 or 1
+            love.graphics.setColor(1, 1, 1)
+            love.graphics.draw(
+                frame,
+                math.floor(projectile.x),
+                math.floor(projectile.y),
+                0,
+                scaleX,
+                1,
+                frame:getWidth() * 0.5,
+                frame:getHeight() * 0.5
+            )
+        else
+            love.graphics.setColor(projectileSettings.color[1], projectileSettings.color[2], projectileSettings.color[3])
+            love.graphics.circle("fill", math.floor(projectile.x), math.floor(projectile.y), projectile.radius)
+        end
     end
     love.graphics.setColor(1, 1, 1)
 end
