@@ -1,0 +1,4 @@
+Next Steps (Power-Up Focus)
+1. Review the current gameplay code, especially rocket logic, to make sure everything is solid before adding new features.
+2. Outline the overall power-up system (how they spawn, activate, and interact with the player) so upcoming upgrades have a clear structure.
+3. Turn the rocket into one of the planned power-up upgrades, updating code and assets as needed.
