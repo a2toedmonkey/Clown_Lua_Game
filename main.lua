@@ -60,6 +60,8 @@ rocketSettings.height = rocketSettings.frames[1]:getHeight()
 -- Runtime list of active projectiles.
 local projectiles = {}
 
+--list of active powerups, currently unused but can be extended for pickup logic and effects.
+local powerups = {}
 --[[
 Core player state:
 - x/y: top-left world position.
