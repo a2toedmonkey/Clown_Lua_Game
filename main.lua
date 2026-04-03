@@ -257,16 +257,16 @@ local function handleMovement(dt)
     local shootingLeft = love.keyboard.isDown("left")
     local shootingRight = love.keyboard.isDown("right")
     local shooting = shootingLeft or shootingRight
-
+    local speedVar=1.0
     if love.keyboard.isDown("a") or love.keyboard.isDown("d") then
         if love.keyboard.isDown("a") then
-            horizontal = horizontal - 1
+            horizontal = horizontal - speedVar
             moving = true
             player.direction = "left"
         end
 
         if love.keyboard.isDown("d") then
-            horizontal = horizontal + 1
+            horizontal = horizontal + speedVar
             moving = true
             player.direction = "right"
         end
