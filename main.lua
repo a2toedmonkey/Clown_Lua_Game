@@ -49,6 +49,45 @@ local projectileSettings = {
     color = {1, 0, 0}
 }
 
+--[[
+Enemy catalog:
+- Defines reusable enemy types and their animations.
+- Additional enemy types can be added here later.
+]]
+local enemyTypes = {
+    fro_clown = {
+        speed = 120,
+        gravity = 900,
+        animations = {
+            walk = {
+                frames = loadSequentialFrames("sprites/enemies/fro_clown/walk/fro_clownwalk-", 6),
+                fps = 10
+            }
+        }
+    }
+}
+
+--[[
+======================== ENEMY SPAWN SETTINGS ========================
+Easy-to-find tuning block for enemy population and spawn behavior.
+
+- spawnCount: number of enemies to spawn at level load.
+- spawnYMinFactor/spawnYMaxFactor: random vertical spawn range as a
+  fraction of the screen height (0 = top, 1 = bottom).
+======================================================================
+]]
+local enemySpawnSettings = {
+    spawnCount = 4,
+    spawnYMinFactor = 0.05,
+    spawnYMaxFactor = 0.85
+}
+
+-- Enemy type pool used for random spawn selection.
+-- Add more type keys here as they become available in enemyTypes.
+local enemyTypePool = {
+    "fro_clown"
+}
+
 local rocketSettings = {
     frames = loadSequentialFrames("sprites/projectiles/rocket/rocket", 4),
     fps = 12
@@ -59,6 +98,9 @@ rocketSettings.height = rocketSettings.frames[1]:getHeight()
 
 -- Runtime list of active projectiles.
 local projectiles = {}
+
+-- Runtime list of active enemies in the level.
+local enemies = {}
 
 --list of active powerups, currently unused but can be extended for pickup logic and effects.
 local powerups = {}
@@ -232,6 +274,140 @@ local function updateProjectiles(dt)
     end
 end
 
+-- Spawns enemies for the current level using the enemy type catalog.
+local function loadEnemies()
+    enemies = {}
+    local windowWidth, windowHeight = love.graphics.getDimensions()
+
+    if #enemyTypePool == 0 then
+        return
+    end
+
+    local spawnCount = math.max(0, enemySpawnSettings.spawnCount)
+    local minSpawnY = math.floor(windowHeight * enemySpawnSettings.spawnYMinFactor)
+    local maxSpawnY = math.floor(windowHeight * enemySpawnSettings.spawnYMaxFactor)
+    if maxSpawnY < minSpawnY then
+        maxSpawnY = minSpawnY
+    end
+
+    for _ = 1, spawnCount do
+        local chosenType = enemyTypePool[math.random(1, #enemyTypePool)]
+        local enemyType = enemyTypes[chosenType]
+        local firstFrame = enemyType.animations.walk.frames[1]
+        local width = firstFrame:getWidth()
+        local height = firstFrame:getHeight()
+        local xMax = math.max(0, windowWidth - width)
+        local spawnYMaxClamped = math.min(maxSpawnY, windowHeight - height)
+        local spawnY = math.random(minSpawnY, math.max(minSpawnY, spawnYMaxClamped))
+
+        enemies[#enemies + 1] = {
+            type = chosenType,
+            x = math.random(0, xMax),
+            y = spawnY,
+            width = width,
+            height = height,
+            speed = enemyType.speed,
+            gravity = enemyType.gravity,
+            velocityY = 0,
+            grounded = false,
+            support = nil,
+            direction = math.random(0, 1) == 0 and "left" or "right",
+            current = "walk",
+            animationTime = 0
+        }
+    end
+end
+
+-- Resolves where an enemy should land while falling (platform top or floor).
+local function resolveEnemyLanding(enemy, nextY)
+    local windowHeight = love.graphics.getHeight()
+    local groundY = windowHeight - enemy.height
+    local collided = false
+    local resolvedY = nil
+    local resolvedSupport = nil
+
+    local function setLanding(y, support)
+        if not resolvedY or y < resolvedY then
+            resolvedY = y
+            resolvedSupport = support
+            collided = true
+        end
+    end
+
+    if enemy.velocityY >= 0 then
+        for _, platform in ipairs(platforms) do
+            local withinX = enemy.x + enemy.width > platform.x and enemy.x < platform.x + platform.width
+            local wasAbove = enemy.y + enemy.height <= platform.y + 1
+            local willIntersect = nextY + enemy.height >= platform.y
+            if withinX and wasAbove and willIntersect then
+                setLanding(platform.y - enemy.height, {
+                    kind = "platform",
+                    left = platform.x,
+                    right = platform.x + platform.width,
+                    y = platform.y - enemy.height
+                })
+            end
+        end
+    end
+
+    if nextY >= groundY then
+        setLanding(groundY, {
+            kind = "ground",
+            left = 0,
+            right = love.graphics.getWidth(),
+            y = groundY
+        })
+    end
+
+    if collided then
+        return true, resolvedY, resolvedSupport
+    end
+
+    return false, nextY, nil
+end
+
+-- Updates enemy falling, landing, and patrol movement bounded to current support surface.
+local function updateEnemies(dt)
+    for _, enemy in ipairs(enemies) do
+        enemy.animationTime = enemy.animationTime + dt
+
+        if not enemy.grounded then
+            enemy.velocityY = enemy.velocityY + enemy.gravity * dt
+            local nextY = enemy.y + enemy.velocityY * dt
+            local hitSurface, correctedY, support = resolveEnemyLanding(enemy, nextY)
+            if hitSurface then
+                enemy.y = correctedY
+                enemy.velocityY = 0
+                enemy.grounded = true
+                enemy.support = support
+            else
+                enemy.y = nextY
+            end
+        end
+
+        if enemy.grounded and enemy.support then
+            local dir = enemy.direction == "left" and -1 or 1
+            local nextX = enemy.x + enemy.speed * dir * dt
+            local minX = enemy.support.left
+            local maxX = math.max(minX, enemy.support.right - enemy.width)
+
+            if nextX <= minX then
+                enemy.x = minX
+                enemy.direction = "right"
+            elseif nextX >= maxX then
+                enemy.x = maxX
+                enemy.direction = "left"
+            else
+                enemy.x = nextX
+            end
+        end
+
+        if enemy.support then
+            enemy.y = enemy.support.y
+        end
+    end
+end
+
 -- Love2D load hook: initialize random seed, player sprite sizing, start position, and platforms.
 function love.load()
     math.randomseed(os.time())
@@ -247,6 +423,7 @@ function love.load()
     player.y = (windowHeight - player.height)
     player.groundY = player.y
     loadPlatforms()
+    loadEnemies()
 end
 
 --[[
@@ -378,6 +555,7 @@ function love.update(dt)
     local moving = handleMovement(dt)
     handleJump(dt, moving)
     updateProjectiles(dt)
+    updateEnemies(dt)
 end
 
 -- Love2D keypress hook: jump with space, shoot with left/right arrows.
@@ -464,5 +642,24 @@ function love.draw()
             love.graphics.circle("fill", math.floor(projectile.x), math.floor(projectile.y), projectile.radius)
         end
     end
+
+    for _, enemy in ipairs(enemies) do
+        local enemyType = enemyTypes[enemy.type]
+        local walkAnimation = enemyType.animations.walk
+        local frameCount = #walkAnimation.frames
+        local frameDuration = 1 / walkAnimation.fps
+        local frameIndex = math.floor(enemy.animationTime / frameDuration) % frameCount + 1
+        local frame = walkAnimation.frames[frameIndex]
+        local drawX = math.floor(enemy.x)
+        local drawY = math.floor(enemy.y)
+
+        love.graphics.setColor(1, 1, 1)
+        if enemy.direction == "left" then
+            love.graphics.draw(frame, drawX + enemy.width, drawY, 0, -1, 1)
+        else
+            love.graphics.draw(frame, drawX, drawY)
+        end
+    end
+
     love.graphics.setColor(1, 1, 1)
 end
